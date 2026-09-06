@@ -359,12 +359,16 @@ class NavButton(QWidget):
             'pill': lambda: p.drawRoundedRect(
                 QRectF(x0 + 1, y0 + 1, cw - 2, cw - 2), (cw - 2) / 2, (cw - 2) / 2),
             'chat': lambda: self._chat_icon(p, cw, x0, y0),
-            'info': lambda: (
-                p.drawEllipse(QPointF(x0 + cw / 2, y0 + cw / 2 - 2.2), 1.05, 1.05),
-                p.drawLine(QPointF(x0 + cw / 2, y0 + cw / 2), QPointF(x0 + cw / 2, y0 + cw - 2.5)),
-            ),
+            'info': lambda: self._info_icon(p, cw, x0, y0),
         }
         paths.get(self.icon_path or 'doc', paths['doc'])()
+
+    def _info_icon(self, p, cw, x0, y0):
+        """关于图标：圆环 + 内部「i」，与其他闭合轮廓图标保持一致。"""
+        cx, cy = x0 + cw / 2, y0 + cw / 2
+        p.drawEllipse(QPointF(cx, cy), 4.6, 4.6)
+        p.drawLine(QPointF(cx, cy - 0.8), QPointF(cx, cy + 2.4))
+        p.drawEllipse(QPointF(cx, cy - 2.6), 1.0, 1.0)
 
     def _chat_icon(self, p, cw, x0, y0):
         p.drawRoundedRect(QRectF(x0, y0, cw, cw - 3), 2.2, 2.2)
