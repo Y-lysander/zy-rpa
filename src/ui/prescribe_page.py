@@ -27,7 +27,9 @@ from ..core.ai_client import AIClientError, VirtualAIClient
 from ..core.config import Config
 from ..core.pdf_export import export_prescription_pdf
 from .dark import is_dark
-from .pagekit import BasePage, SectionCard, SmoothScrollArea, section_label, style_panel
+from .pagekit import (
+    AnimatedButton, BasePage, SectionCard, SmoothScrollArea, section_label, style_panel,
+)
 
 
 # ---- 异步开方线程 ----
@@ -142,7 +144,7 @@ class PrescribePage(BasePage):
         v.addLayout(grid)
 
         v.addSpacing(8)
-        self.go_btn = QPushButton("开方", form)
+        self.go_btn = AnimatedButton("开方", form)
         self.go_btn.setObjectName("CTA")
         self.go_btn.setCursor(Qt.PointingHandCursor)
         self.go_btn.clicked.connect(self._on_prescribe)
@@ -218,13 +220,13 @@ class PrescribePage(BasePage):
         bar = QHBoxLayout(); bar.setSpacing(10)
         self.status = QLabel("填写病情信息后点击「开方」")
         bar.addWidget(self.status, 1)
-        self.export_btn = QPushButton("导出 PDF")
+        self.export_btn = AnimatedButton("导出 PDF")
         self.export_btn.setObjectName("Ghost")
         self.export_btn.setCursor(Qt.PointingHandCursor)
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._do_export)
         bar.addWidget(self.export_btn)
-        self.reset_btn = QPushButton("重置")
+        self.reset_btn = AnimatedButton("重置")
         self.reset_btn.setObjectName("Ghost")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
         self.reset_btn.clicked.connect(self._on_reset)
@@ -533,18 +535,20 @@ class PrescribePage(BasePage):
     def _style_form(self, form):
         dark = is_dark(self)
         fg = theme.st("nav_text_act", dark).name()
-        border = theme.st("panel_border", dark).name()
+        border = theme.st("field_border", dark).name()
         accent = theme.st("accent", dark)
-        hover = theme.st("nav_hover", dark).name()
+        hover_border = QColor(accent); hover_border.setAlpha(130)
+        hover_border = hover_border.name(QColor.HexArgb)
         form.setStyleSheet(
             f"QPushButton#SegBtn {{ background: transparent; color: {fg};"
-            f" border: 1px solid {border}; border-radius: 8px;"
-            f" padding: 5px 0; }}"
-            f"QPushButton#SegBtn:hover {{ background: {hover}; }}"
+            f" border: 1px solid {border}; border-radius: 9px;"
+            f" padding: 0; min-height: 30px; }}"
+            f"QPushButton#SegBtn:hover {{ border: 1px solid {hover_border}; }}"
             f"QPushButton#SegBtn:checked {{ background: {accent.name()}; color: white;"
             f" border-color: {accent.name()}; }}"
             f"QPushButton#CTA {{ background: {accent.name()}; color: white;"
-            f" border: none; border-radius: 10px; height: 40px; }}"
+            f" border: none; border-radius: 9px; height: 40px;"
+            f" font-size: 14px; font-weight: bold; }}"
             f"QPushButton#CTA:hover {{ background: {accent.darker(112).name()}; }}"
             f"QPushButton#CTA:disabled {{ background: #9aa0ab; }}")
 

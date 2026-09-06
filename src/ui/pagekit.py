@@ -1,9 +1,11 @@
 """内容页基础组件：自绘标题/副标题、可注入的内容面板、统一样式辅助，
 以及跨页面复用的滚动区（丝滑滚动）与结果区段卡片。"""
-from PySide6.QtCore import Qt, QAbstractAnimation, QEasingCurve, QPropertyAnimation, QRectF
-from PySide6.QtGui import QFont, QPainter, QPen
+from PySide6.QtCore import (
+    QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRectF, Qt,
+)
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..core import theme
@@ -77,34 +79,47 @@ def style_panel(widget, dark=None):
     """给承载表单控件的内容面板设置一套跟随主题的 QSS，返回实际暗/明模式。"""
     dark = is_dark(widget) if dark is None else dark
     text = theme.st("title_text", dark).name()
-    sub = theme.st("sub_text", dark).name()
-    accent = theme.st("accent", dark).name()
+    accent_c = theme.st("accent", dark)
+    accent = accent_c.name()
     border = theme.st("panel_border", dark).name()
     bg = theme.st("panel_bg", dark).name()
     fg = theme.st("nav_text_act", dark).name()
     hover = theme.st("nav_hover", dark).name()
+    # 短线式输入框：默认灰色短线，hover 加深，聚焦变主题色
+    _line = QColor(theme.st("sub_text", dark))
+    line_idle = QColor(_line); line_idle.setAlpha(120)
+    line_idle = line_idle.name(QColor.HexArgb)
+    line_hover = QColor(_line); line_hover.setAlpha(200)
+    line_hover = line_hover.name(QColor.HexArgb)
     widget.setStyleSheet(
         f"QLabel {{ color: {text}; background: transparent; }}"
-        f"QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox {{"
-        f" background: {bg}; color: {fg}; border: 1px solid {border};"
-        f" border-radius: 6px; padding: 5px 9px;"
+        # 单行输入框/数字框：透明底 + 底部短线，聚焦转主题色
+        f"QLineEdit, QSpinBox {{ background: transparent; color: {fg};"
+        f" border: none; border-bottom: 1px solid {line_idle}; border-radius: 0;"
+        f" padding: 6px 2px 7px 2px; font-size: 13px;"
         f" selection-background-color: {accent}; selection-color: white; }}"
-        f"QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover, QSpinBox:hover {{"
-        f" border: 1px solid {accent}; }}"
-        f"QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus {{"
-        f" border: 1px solid {accent}; }}"
+        f"QLineEdit:hover, QSpinBox:hover {{ border-bottom: 1px solid {line_hover}; }}"
+        f"QLineEdit:focus, QSpinBox:focus {{ border-bottom: 2px solid {accent}; }}"
+        f"QLineEdit:disabled, QSpinBox:disabled {{ color: #9aa0ab; }}"
 
-        f"QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled,"
-        f" QSpinBox:disabled {{ color: #9aa0ab; background: {hover}; }}"
+        # 多行输入（主诉/现病史/整方文本）：同样短线式，去方框
+        f"QTextEdit, QPlainTextEdit {{ background: transparent; color: {fg};"
+        f" border: none; border-bottom: 1px solid {line_idle}; border-radius: 0;"
+        f" padding: 4px 2px 6px 2px; font-size: 13px;"
+        f" selection-background-color: {accent}; selection-color: white; }}"
+        f"QTextEdit:hover, QPlainTextEdit:hover {{ border-bottom: 1px solid {line_hover}; }}"
+        f"QTextEdit:focus, QPlainTextEdit:focus {{ border-bottom: 2px solid {accent}; }}"
+        f"QTextEdit:disabled, QPlainTextEdit:disabled {{ color: #9aa0ab; }}"
 
-        # 下拉框本体 + 三角箭头 + 弹出项列表
-        f"QComboBox {{ background: {bg}; color: {fg}; border: 1px solid {border};"
-        f" border-radius: 6px; padding: 5px 26px 5px 9px; }}"
-        f"QComboBox:hover, QComboBox:focus {{ border-color: {accent}; }}"
+        # 下拉框：短线式 + 右侧三角箭头
+        f"QComboBox {{ background: transparent; color: {fg};"
+        f" border: none; border-bottom: 1px solid {line_idle}; border-radius: 0;"
+        f" padding: 6px 22px 7px 2px; font-size: 13px; }}"
+        f"QComboBox:hover {{ border-bottom: 1px solid {line_hover}; }}"
+        f"QComboBox:focus {{ border-bottom: 2px solid {accent}; }}"
         f"QComboBox:disabled {{ color: #9aa0ab; }}"
         f"QComboBox::drop-down {{ subcontrol-origin: padding;"
-        f" subcontrol-position: top right; width: 24px; border: none;"
-        f" border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}"
+        f" subcontrol-position: top right; width: 24px; border: none; }}"
         f"QComboBox::down-arrow {{ image: none; width: 0; height: 0;"
         f" border-left: 4px solid transparent; border-right: 4px solid transparent;"
         f" border-top: 5px solid {fg}; margin-top: -2px; }}"
@@ -124,7 +139,7 @@ def style_panel(widget, dark=None):
         f" QComboBox QScrollBar::sub-line:vertical {{ height: 0; }}"
 
         f"QPushButton {{ background: {accent}; color: white; border: none;"
-        f" border-radius: 6px; padding: 6px 16px; }}"
+        f" border-radius: 8px; padding: 6px 16px; }}"
         f"QPushButton:disabled {{ background: #9aa0ab; }}"
         f"QPushButton#Ghost {{ background: transparent; color: {fg};"
         f" border: 1px solid {border}; }}"
@@ -136,6 +151,41 @@ def style_panel(widget, dark=None):
         f"QProgressBar::chunk {{ background: {accent}; border-radius: 6px; }}"
     )
     return dark
+
+
+# 鼠标点击动画：按下向下移动 1px 模拟下沉，释放恢复原位（参考 .md/pyqt5-Pattern.md）。
+# 兼容布局调整（LayoutRequest）时清空位置缓存，避免位置错乱。
+class AnimatedButton(QPushButton):
+    """带动画效果的按钮——点击时下沉 1px，释放后还原。"""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._original_pos = None
+        self._is_pressed = False
+
+    def event(self, event):
+        if event.type() == QEvent.LayoutRequest and not self._is_pressed:
+            self._original_pos = None
+        return super().event(event)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._original_pos = self.pos()
+        self._is_pressed = True
+        super().mousePressEvent(event)
+        if self._original_pos is not None:
+            self.move(QPoint(self._original_pos.x(), self._original_pos.y() + 1))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        self._is_pressed = False
+        if self._original_pos is not None:
+            self.move(self._original_pos)
+        super().mouseReleaseEvent(event)
 
 
 # ---------------------------------------------------------------------------

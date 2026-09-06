@@ -8,11 +8,12 @@
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import (
-    QObject, QRect, Qt, QAbstractAnimation, QEasingCurve, QEvent, QPoint,
-    QThread, QVariantAnimation, Signal,
+    QAbstractNativeEventFilter, QObject, QRect, Qt, QAbstractAnimation,
+    QEasingCurve, QEvent, QPoint, QThread, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (
@@ -27,10 +28,78 @@ from ..core.config import Config
 from ..core.pdf_export import export_recognize_pdf
 from ..data.herbs import HERB_NAMES, search
 from .dark import is_dark
-from .pagekit import BasePage, SectionCard, SmoothScrollArea, section_label, style_panel
+from .pagekit import (
+    AnimatedButton, BasePage, SectionCard, SmoothScrollArea, section_label, style_panel,
+)
 
 # 剂量单位下拉候选（data 存规范化单位文本）
 _UNITS = ["g", "kg", "毫克", "毫升", "枚", "片", "包", "剂", "钱"]
+
+
+# ---- Windows 输入法键位拦截 ----
+# 中文输入法在组合拼音时会把方向键/回车送给输入法候选窗，QLineEdit 因而收不到
+# QEvent.KeyPress，导致联想弹窗的键盘选词失效。这里用原生消息过滤器在系统层
+# 拦截这几个键，直接处理选词/填入/收起，避免被输入法吞掉。
+_WIN32 = sys.platform == "win32"
+_VK_UP, _VK_DOWN, _VK_RETURN, _VK_ESCAPE = 0x26, 0x28, 0x0D, 0x1B
+_WM_KEYDOWN = 0x0100
+
+
+class _HerbNativeKeyFilter(QAbstractNativeEventFilter):
+    """(仅 Windows) 联想弹窗可见时拦截方向键/回车/ESC，避免被输入法吞掉。"""
+
+    def nativeEventFilter(self, eventType, message):
+        if not _WIN32 or eventType not in (b"windows_generic_MSG", "windows_generic_MSG"):
+            return False, 0
+        try:
+            msg = _MSG.from_address(int(message))
+            if msg.message != _WM_KEYDOWN:
+                return False, 0
+            edit = QApplication.focusWidget()
+            if not isinstance(edit, HerbNameEdit) or not edit._popup.isVisible():
+                return False, 0
+            key = msg.wParam
+            if key == _VK_UP:
+                edit._nav(-1); return True, 0
+            if key == _VK_DOWN:
+                edit._nav(1); return True, 0
+            if key == _VK_RETURN:
+                edit._confirm(); return True, 0
+            if key == _VK_ESCAPE:
+                edit._close_popup(); return True, 0
+        except Exception:
+            pass
+        return False, 0
+
+
+if _WIN32:
+    import ctypes
+
+    class _MSG(ctypes.Structure):
+        """64 位 Windows MSG 结构前 4 个字段（足够读取 message 与 wParam）。"""
+        _fields_ = [
+            ("hwnd", ctypes.c_void_p),      # 偏移 0
+            ("message", ctypes.c_uint),     # 偏移 8
+            ("_pad", ctypes.c_uint),        # 偏移 12
+            ("wParam", ctypes.c_size_t),    # 偏移 16
+        ]
+
+    _herb_native_filter = _HerbNativeKeyFilter()
+    _herb_native_installed = False
+else:
+    _herb_native_filter = None
+    _herb_native_installed = True
+
+
+def _install_native_filter():
+    """应用级安装一次原生键位过滤器（Windows 专用）。"""
+    global _herb_native_installed
+    if _herb_native_installed:
+        return
+    _herb_native_installed = True
+    app = QApplication.instance()
+    if app is not None and _herb_native_filter is not None:
+        app.installNativeEventFilter(_herb_native_filter)
 
 
 # ---- 药名联想输入框 ----
@@ -70,6 +139,7 @@ class HerbNameEdit(QLineEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        _install_native_filter()           # (Windows) 保证输入法不吞方向键/回车
         self.installEventFilter(self)          # 接管弹窗可见时的键盘交互
         QApplication.instance().installEventFilter(_PopupDismissFilter(self))
         self._popup_row = -1                   # 当前预选行（-1 表示未预选）
@@ -156,6 +226,30 @@ class HerbNameEdit(QLineEdit):
         self.setCursorPosition(len(item.text()))
         self._close_popup()
 
+    def _nav(self, delta):
+        """在候选列表里移动预选行（delta 为 +1/-1）；未预选时方向决定落点。"""
+        n = self._list.count()
+        if not n:
+            return
+        row = self._popup_row
+        if row < 0:
+            row = 0 if delta > 0 else n - 1
+        else:
+            row = (row + delta) % n
+        self._popup_row = row
+        self._list.setCurrentRow(row)
+
+    def _confirm(self):
+        """把当前预选行填入输入框并关闭弹窗。"""
+        n = self._list.count()
+        if not n:
+            return
+        row = self._popup_row if self._popup_row >= 0 else 0
+        self._pick_item(self._list.item(row))
+        # 取消输入法未决的组字：防止回车后 IME 又把"药名 拼音 首字母"
+        # 复合串提交追加回输入框，覆盖刚填入的药名。
+        QGuiApplication.inputMethod().reset()
+
     def _normalize_composite(self):
         """把"药名 拼音 首字母"复合串归一化为药名。
 
@@ -178,21 +272,13 @@ class HerbNameEdit(QLineEdit):
             et = event.type()
             if et == QEvent.KeyPress and self._popup.isVisible():
                 key = event.key()
-                n = self._list.count()
-                if key in (Qt.Key_Down, Qt.Key_Up) and n:
-                    row = self._popup_row
-                    row = (row + 1) % n if key == Qt.Key_Down else (row - 1) % n
-                    if row < 0:
-                        row = n - 1
-                    self._popup_row = row
-                    self._list.setCurrentRow(row)
+                # 非 Windows 平台（macOS 等）无输入法吞键问题，直接走事件过滤。
+                # Windows 上由原生过滤器先行拦截，此处作为兜底。
+                if key in (Qt.Key_Down, Qt.Key_Up):
+                    self._nav(1 if key == Qt.Key_Down else -1)
                     return True
-                if key in (Qt.Key_Return, Qt.Key_Enter) and n:
-                    row = self._popup_row if self._popup_row >= 0 else 0
-                    self._pick_item(self._list.item(row))
-                    # 取消输入法未决的组字：防止回车后 IME 又把"药名 拼音 首字母"
-                    # 复合串提交追加回输入框，覆盖刚填入的药名。
-                    QGuiApplication.inputMethod().reset()
+                if key in (Qt.Key_Return, Qt.Key_Enter):
+                    self._confirm()
                     return True
                 if key == Qt.Key_Escape:
                     self._close_popup()
@@ -267,8 +353,8 @@ class HerbRow(QWidget):
             self.unit_cb.addItem(u, u)
         self.unit_cb.setFixedWidth(74)
         h.addWidget(self.unit_cb)
-        self.del_btn = QPushButton("删除", self)
-        self.del_btn.setObjectName("Ghost")
+        self.del_btn = AnimatedButton("删除", self)
+        self.del_btn.setObjectName("Danger")
         self.del_btn.setCursor(Qt.PointingHandCursor)
         self.del_btn.setFixedWidth(56)
         self.del_btn.clicked.connect(lambda: self.remove_clicked.emit(self))
@@ -331,8 +417,8 @@ class RecognizePage(BasePage):
         self.rows_lay.setSpacing(6)
         v.addWidget(self.rows_box)
 
-        self.add_btn = QPushButton("＋ 添加一味药材", form)
-        self.add_btn.setObjectName("Ghost")
+        self.add_btn = AnimatedButton("＋ 添加一味药材", form)
+        self.add_btn.setObjectName("AddSub")
         self.add_btn.setCursor(Qt.PointingHandCursor)
         self.add_btn.clicked.connect(self._add_row)
         v.addWidget(self.add_btn)
@@ -349,7 +435,7 @@ class RecognizePage(BasePage):
         v.addWidget(self.hint)
 
         v.addSpacing(8)
-        self.go_btn = QPushButton("识别", form)
+        self.go_btn = AnimatedButton("识别", form)
         self.go_btn.setObjectName("CTA")
         self.go_btn.setCursor(Qt.PointingHandCursor)
         self.go_btn.clicked.connect(self._on_recognize)
@@ -401,13 +487,13 @@ class RecognizePage(BasePage):
         bar = QHBoxLayout(); bar.setSpacing(10)
         self.status = QLabel("录入药材后点击「识别」")
         bar.addWidget(self.status, 1)
-        self.export_btn = QPushButton("导出 PDF")
+        self.export_btn = AnimatedButton("导出 PDF")
         self.export_btn.setObjectName("Ghost")
         self.export_btn.setCursor(Qt.PointingHandCursor)
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._do_export)
         bar.addWidget(self.export_btn)
-        self.reset_btn = QPushButton("重置")
+        self.reset_btn = AnimatedButton("重置")
         self.reset_btn.setObjectName("Ghost")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
         self.reset_btn.clicked.connect(self._on_reset)
@@ -683,17 +769,36 @@ class RecognizePage(BasePage):
     def _style_form(self, form):
         dark = is_dark(self)
         accent = theme.st("accent", dark)
-        border = theme.st("panel_border", dark).name()
+        border = theme.st("field_border", dark).name()
         fg = theme.st("nav_text_act", dark).name()
-        hover = theme.st("nav_hover", dark).name()
+        # nav_pill / nav_hover 为半透明色，必须用 HexArgb 保留透明度，否则会变不透明导致文字看不清
+        hover = theme.st("nav_hover", dark).name(QColor.HexArgb)
+        # 「添加一味药材」：两种模式都用明显区别于页面底色的实心灰，确保一眼可辨
+        if dark:
+            add_fill = "#333a45"
+            add_hover = "#3f4754"
+        else:
+            add_fill = "#dde1e7"
+            add_hover = "#c3c8d0"
         form.setStyleSheet(
+            # 「添加一味药材」：柔和实心填充按钮（md 风格，非透明描边）
+            f"QPushButton#AddSub {{ background: {add_fill}; color: {fg}; border: none;"
+            f" border-radius: 9px; padding: 9px 14px; }}"
+            f"QPushButton#AddSub:hover {{ background: {add_hover}; }}"
+            # 「删除」：实心危险按钮
+            f"QPushButton#Danger {{ background: #d64545; color: white; border: none;"
+            f" border-radius: 9px; padding: 4px 0; }}"
+            f"QPushButton#Danger:hover {{ background: #c13a3a; }}"
+            f"QPushButton#Danger:disabled {{ background: #9aa0ab; }}"
             f"QPushButton#Ghost {{ background: transparent; color: {fg};"
-            f" border: 1px solid {border}; border-radius: 6px;"
-            f" padding: 6px 14px; }}"
-            f"QPushButton#Ghost:hover {{ background: {hover}; }}"
+            f" border: 1px dashed {border}; border-radius: 9px;"
+            f" padding: 8px 14px; }}"
+            f"QPushButton#Ghost:hover {{ background: {hover};"
+            f" border-color: {accent.name()}; }}"
             f"QPushButton#Ghost:disabled {{ color: #9aa0ab; }}"
             f"QPushButton#CTA {{ background: {accent.name()}; color: white;"
-            f" border: none; border-radius: 10px; height: 40px; }}"
+            f" border: none; border-radius: 9px; height: 40px;"
+            f" font-size: 14px; font-weight: bold; }}"
             f"QPushButton#CTA:hover {{ background: {accent.darker(112).name()}; }}"
             f"QPushButton#CTA:disabled {{ background: #9aa0ab; }}")
 

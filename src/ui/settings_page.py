@@ -13,6 +13,7 @@ class SettingsPage(BasePage):
     def __init__(self, window=None, parent=None):
         super().__init__("设置", "应用外观 · AI 供应商与密钥")
         self.window = window
+        self._syncing = False      # 同步期间屏蔽 currentIndexChanged 触发套用/保存
         self._build()
 
     def _build(self):
@@ -67,8 +68,17 @@ class SettingsPage(BasePage):
         style_panel(self.panel)
         self.update()
 
+    def sync_from_config(self):
+        """读取当前主题配置并同步下拉框选中项（仅更新显示，不触发套用/保存）。"""
+        self._syncing = True
+        try:
+            self.style_cb.setCurrentIndex(self.style_cb.findData(theme.style_name()))
+            self.theme_cb.setCurrentIndex(self.theme_cb.findData(theme.theme_mode_name()))
+        finally:
+            self._syncing = False
+
     def _apply_appearance(self):
-        if self.window is None:
+        if self.window is None or self._syncing:
             return
         style = self.style_cb.currentData()
         theme_ = self.theme_cb.currentData()

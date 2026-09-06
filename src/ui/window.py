@@ -498,6 +498,8 @@ class AppWindow(QWidget):
             self.set_style(style)
         if theme_:
             self.set_theme(theme_)
+        # 偏好恢复后再同步设置页下拉框，避免 UI 选中态停留在默认值
+        self.pages["settings"].sync_from_config()
 
     def center_on_screen(self):
         """将窗口移动到所在屏幕可用区的中心（在 show() 之后调用）。"""
