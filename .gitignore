@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.idea/
+.vs/
+output/
+.md/
+dist/
+test/
+Data/
+server/
+
+*.exe
+*.bat
+*.sh
