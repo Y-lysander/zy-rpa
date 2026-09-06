@@ -13,3 +13,9 @@ class Config:
 
     # 动态数据目录（AI 生成/导出的内容产物统一放根目录 Data/）
     DATA_DIR = ROOT / "Data"
+
+    # 虚拟 AI 服务（本地模拟，不接真实云端模型）
+    AI_HOST = "127.0.0.1"
+    AI_PORT = 8123
+    AI_BASE = f"http://{AI_HOST}:{AI_PORT}"
+    AI_PROVIDER = "virtual"   # 当前供应商：virtual（本地模拟）

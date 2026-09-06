@@ -18,6 +18,7 @@ from ..core.config import Config
 from ..core.user_config import UserConfig
 from .dark import is_dark
 from .placeholder_page import PlaceholderPage
+from .prescribe_page import PrescribePage
 from .settings_page import SettingsPage
 from .about_page import AboutPage
 
@@ -464,7 +465,7 @@ class AppWindow(QWidget):
         self.pages = {}
         root.addWidget(self.stack, 1)
 
-        self.pages["prescribe"] = PlaceholderPage("药方开方", "根据症状/病史/用药情况自动生成中药方")
+        self.pages["prescribe"] = PrescribePage()
         self.pages["recognize"] = PlaceholderPage("药方识别", "逐项输入药材与用量，AI 分析药效并展示")
         self.pages["assistant"] = PlaceholderPage("AI助手", "与 AI 对话，改进与调整药方，实时查看药方状态")
         self.pages["settings"] = SettingsPage(window=self)

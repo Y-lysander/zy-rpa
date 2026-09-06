@@ -10,21 +10,28 @@
 ## 快速开始
 
 ```bash
-pip install PySide6
+pip install PySide6 fastapi "uvicorn[standard]" reportlab
 python main.py
 ```
+
+首次「开方」时，应用会自动在本地拉起虚拟 AI 服务（`server/`，端口 8123）；
+也可手动启动：`python -m server.run_server`。
+
+> 当前不接入真实云端模型，`server/` 为本地虚拟 AI（规则引擎模拟开方），
+> 后续可无缝替换为真实供应商 API。
 
 ## 界面构成（左侧导航）
 
 | 页面 | 说明 |
 |---|---|
-| **药方开方** | 输入症状等内容 → AI 生成中药方 → 分卡片展示、可导出 PDF |
-| **药方识别** | 逐项输入药材名称/计量 → AI 分析药效并展示、可导出 PDF |
+| **药方开方** | ✅ 已实现：完整表单 → AI 生成药方 → 分卡片展示、可导出 PDF |
+| **药方识别** | 逐项输入药材名称/计量 → AI 分析药效并展示、可导出 PDF（待实现） |
 | **AI助手** | 对话改进/调整药方；可实时查看药方状态（药材/计量/煎服方式等） |
 | **设置** | 深浅色与系统风格切换；AI 模型供应商切换、API Key 配置 |
 | **关于** | 简介与免责声明 |
 
-> 开方/识别/助手的 AI 功能正处于实现规划阶段（占位），细节见 `PRD.md` 末尾待澄清项。
+> 开方功能已实现（基于本地虚拟 AI）；识别/助手的 AI 功能待实现，
+> 细节见 `PRD.md` 末尾待澄清项。
 
 ## 项目结构
 
@@ -32,9 +39,11 @@ python main.py
 zy_rpa/
   main.py             # GUI 唯一入口（python main.py）
   PRD.md              # 产品需求文档（含待澄清细节）
+  server/             # 虚拟 AI 服务（FastAPI：app.py / 规则引擎 mock_ai.py / 启动 run_server.py）
   src/
-    core/             # 应用配置(Config)、主题/风格(theme)、用户偏好持久化(user_config)
-    ui/               # 主窗口(window)、页面(settings/about/placeholder)、共享组件(pagekit/dark)
+    core/             # 应用配置(Config)、主题/风格(theme)、用户偏好持久化(user_config)、
+                      # AI 客户端(ai_client)、PDF 导出(pdf_export)
+    ui/               # 主窗口(window)、页面(settings/about/prescribe/placeholder)、共享组件(pagekit/dark)
   Data/               # 动态数据目录（AI 生成/导出产物，不入版本库）
 ```
 
