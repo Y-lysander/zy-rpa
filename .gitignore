@@ -6,7 +6,6 @@ output/
 .md/
 dist/
 test/
-Data/
 
 *.exe
 *.bat

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import random
+import re
 from typing import Any
 
 MODEL_NAME = "mock-tcm-herbalist-v1"
@@ -249,3 +250,319 @@ def mock_complete(data: dict[str, Any]) -> dict[str, Any]:
     """模拟模型"单次对话开方"入口：忽略对话历史，仅按当前输入开方。"""
     build_prompt(data)            # 组装提示词(为真实模型预留)
     return generate_prescription(data)
+
+
+# ---------------------------------------------------------------------------
+# 药方识别（模拟）：本地药材知识库 + 整方文本提取。
+# 每味药：nature 性味 | meridian 归经 | effects 功效 | notes 使用注意
+# ---------------------------------------------------------------------------
+_HERB_INFO: dict[str, dict[str, str]] = {
+    "桂枝": {"nature": "辛、甘，温", "meridian": "心、肺、膀胱经",
+             "effects": "发汗解肌，温通经脉，助阳化气。",
+             "notes": "温热病及阴虚阳盛者忌用，孕妇慎用。"},
+    "白芍": {"nature": "苦、酸，微寒", "meridian": "肝、脾经",
+             "effects": "养血调经，敛阴止汗，柔肝止痛，平抑肝阳。",
+             "notes": "虚寒性腹痛泄泻者慎用；反藜芦。"},
+    "生姜": {"nature": "辛，微温", "meridian": "肺、脾、胃经",
+             "effects": "解表散寒，温中止呕，化痰止咳，解鱼蟹毒。",
+             "notes": "阴虚内热者忌用。"},
+    "大枣": {"nature": "甘，温", "meridian": "脾、胃、心经",
+             "effects": "补中益气，养血安神。",
+             "notes": "湿盛脘腹胀满者慎用。"},
+    "甘草": {"nature": "甘，平", "meridian": "心、肺、脾、胃经",
+             "effects": "补脾益气，清热解毒，祛痰止咳，缓急止痛，调和诸药。",
+             "notes": "反海藻、大戟、甘遂、芫花；久服大剂量可致浮肿。"},
+    "炙甘草": {"nature": "甘，平", "meridian": "心、肺、脾、胃经",
+               "effects": "补脾和胃，益气复脉。",
+               "notes": "同甘草，反海藻、大戟、甘遂、芫花。"},
+    "金银花": {"nature": "甘，寒", "meridian": "肺、心、胃经",
+               "effects": "清热解毒，疏散风热。",
+               "notes": "脾胃虚寒者慎用。"},
+    "连翘": {"nature": "苦，微寒", "meridian": "肺、心、小肠经",
+              "effects": "清热解毒，消肿散结，疏散风热。",
+              "notes": "脾胃虚寒及气虚脓清者不宜。"},
+    "桔梗": {"nature": "苦、辛，平", "meridian": "肺经",
+             "effects": "宣肺，祛痰，利咽，排脓。",
+             "notes": "阴虚久嗽及咯血者忌用。"},
+    "薄荷": {"nature": "辛，凉", "meridian": "肺、肝经",
+             "effects": "疏散风热，清利头目，利咽透疹，疏肝行气。",
+             "notes": "体虚多汗者不宜。"},
+    "竹叶": {"nature": "甘、淡，寒", "meridian": "心、肺、胃经",
+             "effects": "清热泻火，除烦生津，利尿。",
+             "notes": "阴虚火旺者不宜久用。"},
+    "牛蒡子": {"nature": "辛、苦，寒", "meridian": "肺、胃经",
+               "effects": "疏散风热，宣肺透疹，解毒利咽。",
+               "notes": "气虚便溏者慎用。"},
+    "荆芥穗": {"nature": "辛，微温", "meridian": "肺、肝经",
+               "effects": "解表散风，透疹，消疮。",
+               "notes": "表虚自汗者慎用。"},
+    "淡豆豉": {"nature": "苦、辛，凉", "meridian": "肺、胃经",
+               "effects": "解表，除烦，宣发郁热。",
+               "notes": "无郁热者慎用。"},
+    "柴胡": {"nature": "苦、辛，微寒", "meridian": "肝、胆经",
+             "effects": "解表退热，疏肝解郁，升举阳气。",
+             "notes": "肝阳上亢、阴虚火旺者忌用。"},
+    "黄芩": {"nature": "苦，寒", "meridian": "肺、胆、脾、大肠、小肠经",
+             "effects": "清热燥湿，泻火解毒，止血，安胎。",
+             "notes": "脾胃虚寒者不宜。"},
+    "人参": {"nature": "甘、微苦，微温", "meridian": "脾、肺、心、肾经",
+             "effects": "大补元气，复脉固脱，补脾益肺，生津养血，安神益智。",
+             "notes": "实证、热证忌用；反藜芦。"},
+    "半夏": {"nature": "辛，温，有毒", "meridian": "脾、胃、肺经",
+             "effects": "燥湿化痰，降逆止呕，消痞散结。",
+             "notes": "阴虚燥咳、血证、热痰者忌用；反乌头。"},
+    "当归": {"nature": "甘、辛，温", "meridian": "肝、心、脾经",
+             "effects": "补血活血，调经止痛，润肠通便。",
+             "notes": "湿盛中满、大便溏泄者慎用。"},
+    "白术": {"nature": "甘、苦，温", "meridian": "脾、胃经",
+             "effects": "健脾益气，燥湿利水，止汗，安胎。",
+             "notes": "阴虚内热、津液亏耗者慎用。"},
+    "茯苓": {"nature": "甘、淡，平", "meridian": "心、肺、脾、肾经",
+             "effects": "利水渗湿，健脾，宁心。",
+             "notes": "虚寒精滑者忌服。"},
+    "陈皮": {"nature": "苦、辛，温", "meridian": "肺、脾经",
+             "effects": "理气健脾，燥湿化痰。",
+             "notes": "气虚及阴虚燥咳者慎用。"},
+    "党参": {"nature": "甘，平", "meridian": "脾、肺经",
+             "effects": "补脾肺气，补血，生津。",
+             "notes": "实证、热证者慎用；反藜芦。"},
+    "黄芪": {"nature": "甘，微温", "meridian": "脾、肺经",
+             "effects": "补气升阳，固表止汗，利水消肿，生津养血，托毒排脓。",
+             "notes": "表实邪盛、气滞湿阻、阴虚阳亢者不宜。"},
+    "茯神": {"nature": "甘、淡，平", "meridian": "心、脾经",
+             "effects": "宁心安神，利水渗湿。",
+             "notes": "同茯苓，虚寒精滑者忌服。"},
+    "远志": {"nature": "苦、辛，温", "meridian": "心、肾、肺经",
+             "effects": "安神益智，交通心肾，祛痰，消肿。",
+             "notes": "有胃炎及胃溃疡者慎用。"},
+    "酸枣仁": {"nature": "甘、酸，平", "meridian": "心、肝、胆经",
+               "effects": "养心补肝，宁心安神，敛汗，生津。",
+               "notes": "有实邪郁火者慎用。"},
+    "龙眼肉": {"nature": "甘，温", "meridian": "心、脾经",
+               "effects": "补益心脾，养血安神。",
+               "notes": "湿盛中满、痰火者慎用。"},
+    "木香": {"nature": "辛、苦，温", "meridian": "脾、胃、大肠、胆经",
+             "effects": "行气止痛，健脾消食。",
+             "notes": "阴虚津亏者慎用。"},
+    "桃仁": {"nature": "苦、甘，平，有小毒", "meridian": "心、肝、大肠经",
+             "effects": "活血祛瘀，润肠通便，止咳平喘。",
+             "notes": "孕妇忌用，便溏者慎用。"},
+    "红花": {"nature": "辛，温", "meridian": "心、肝经",
+             "effects": "活血通经，散瘀止痛。",
+             "notes": "孕妇忌用，有出血倾向者慎用。"},
+    "川芎": {"nature": "辛，温", "meridian": "肝、胆、心包经",
+             "effects": "活血行气，祛风止痛。",
+             "notes": "阴虚火旺、月经过多者慎用，孕妇慎用。"},
+    "赤芍": {"nature": "苦，微寒", "meridian": "肝经",
+             "effects": "清热凉血，散瘀止痛。",
+             "notes": "血虚者慎用；反藜芦。"},
+    "生地": {"nature": "甘、苦，寒", "meridian": "心、肝、肾经",
+             "effects": "清热凉血，养阴生津。",
+             "notes": "脾虚湿滞、腹满便溏者不宜。"},
+    "牛膝": {"nature": "苦、甘、酸，平", "meridian": "肝、肾经",
+             "effects": "逐瘀通经，补肝肾，强筋骨，引血下行。",
+             "notes": "孕妇及月经过多者忌用。"},
+    "熟地黄": {"nature": "甘，微温", "meridian": "肝、肾经",
+               "effects": "补血滋阴，益精填髓。",
+               "notes": "脾胃虚弱、气滞痰多、腹满便溏者忌用。"},
+    "山茱萸": {"nature": "酸、涩，微温", "meridian": "肝、肾经",
+               "effects": "补益肝肾，收涩固脱。",
+               "notes": "命门火炽、素有湿热及小便不利者不宜。"},
+    "山药": {"nature": "甘，平", "meridian": "脾、肺、肾经",
+             "effects": "补脾养胃，生津益肺，补肾涩精。",
+             "notes": "湿盛中满或有积滞者不宜。"},
+    "泽泻": {"nature": "甘、淡，寒", "meridian": "肾、膀胱经",
+             "effects": "利水渗湿，泄热，化浊降脂。",
+             "notes": "肾虚精滑无湿热者忌用。"},
+    "牡丹皮": {"nature": "苦、辛，微寒", "meridian": "心、肝、肾经",
+               "effects": "清热凉血，活血化瘀。",
+               "notes": "血虚有寒、月经过多及孕妇不宜。"},
+    "黄连": {"nature": "苦，寒", "meridian": "心、脾、胃、肝、胆、大肠经",
+             "effects": "清热燥湿，泻火解毒。",
+             "notes": "脾胃虚寒者忌用；苦燥易伤阴津。"},
+    "干姜": {"nature": "辛，热", "meridian": "脾、胃、肾、心、肺经",
+             "effects": "温中散寒，回阳通脉，温肺化饮。",
+             "notes": "阴虚内热、血热妄行者忌用。"},
+    "玄参": {"nature": "甘、苦、咸，微寒", "meridian": "肺、胃、肾经",
+             "effects": "清热凉血，滋阴降火，解毒散结。",
+             "notes": "脾胃虚寒、便溏者忌用；反藜芦。"},
+    "麦冬": {"nature": "甘、微苦，微寒", "meridian": "心、肺、胃经",
+             "effects": "养阴生津，润肺清心。",
+             "notes": "风寒感冒、痰湿咳嗽者忌用。"},
+    "天花粉": {"nature": "甘、微苦，微寒", "meridian": "肺、胃经",
+               "effects": "清热泻火，生津止渴，消肿排脓。",
+               "notes": "孕妇忌用。"},
+    "丹参": {"nature": "苦，微寒", "meridian": "心、肝经",
+             "effects": "活血祛瘀，通经止痛，清心除烦，凉血消痈。",
+             "notes": "无瘀血者慎用；反藜芦。"},
+    "砂仁": {"nature": "辛，温", "meridian": "脾、胃、肾经",
+             "effects": "化湿开胃，温脾止泻，理气安胎。",
+             "notes": "阴虚有热者慎用。"},
+    "厚朴": {"nature": "苦、辛，温", "meridian": "脾、胃、肺、大肠经",
+             "effects": "燥湿消痰，下气除满。",
+             "notes": "气虚津亏者慎用，孕妇慎用。"},
+    "火麻仁": {"nature": "甘，平", "meridian": "脾、胃、大肠经",
+               "effects": "润肠通便。",
+               "notes": "大量服用可引起中毒，孕妇慎用。"},
+    "瓜蒌": {"nature": "甘、微苦，寒", "meridian": "肺、胃、大肠经",
+             "effects": "清热涤痰，宽胸散结，润燥滑肠。",
+             "notes": "反乌头；脾虚便溏者慎用。"},
+    "杏仁": {"nature": "苦，微温，有小毒", "meridian": "肺、大肠经",
+             "effects": "降气止咳平喘，润肠通便。",
+             "notes": "有小毒，不宜过量；阴虚咳嗽者慎用。"},
+    "前胡": {"nature": "苦、辛，微寒", "meridian": "肺经",
+             "effects": "降气化痰，散风清热。",
+             "notes": "阴虚气弱、无外感痰热者慎用。"},
+    "秦艽": {"nature": "苦、辛，平", "meridian": "胃、肝、胆经",
+             "effects": "祛风湿，清湿热，止痹痛，退虚热。",
+             "notes": "久痛虚羸、溲多便溏者慎用。"},
+    "威灵仙": {"nature": "辛、咸，温", "meridian": "膀胱经",
+               "effects": "祛风除湿，通络止痛。",
+               "notes": "气血虚弱者慎用，忌茶。"},
+    "附子": {"nature": "辛、甘，大热，有毒", "meridian": "心、肾、脾经",
+             "effects": "回阳救逆，补火助阳，散寒止痛。",
+             "notes": "有毒，须炮制并先煎；孕妇忌用；反半夏、瓜蒌、贝母、白蔹、白及。"},
+    "浮小麦": {"nature": "甘，凉", "meridian": "心经",
+               "effects": "固表止汗，益气，除热。",
+               "notes": "无虚汗者慎用。"},
+    "天麻": {"nature": "甘，平", "meridian": "肝经",
+             "effects": "息风止痉，平抑肝阳，祛风通络。",
+             "notes": "气血虚甚者慎用。"},
+    "钩藤": {"nature": "甘，凉", "meridian": "肝、心包经",
+             "effects": "息风定惊，清热平肝。",
+             "notes": "无风热及实热者慎用。"},
+    "柏子仁": {"nature": "甘，平", "meridian": "心、肾、大肠经",
+               "effects": "养心安神，润肠通便，止汗。",
+               "notes": "便溏多痰者慎用。"},
+    "猪苓": {"nature": "甘、淡，平", "meridian": "肾、膀胱经",
+             "effects": "利水渗湿。",
+             "notes": "无水湿者不宜久用。"},
+    "白扁豆": {"nature": "甘，微温", "meridian": "脾、胃经",
+               "effects": "健脾化湿，和中消暑。",
+               "notes": "外感寒邪及疟疾者不宜。"},
+}
+
+# 十八反/十九畏（简化）：识别到下列组合时在配伍解析中给出禁忌提示
+_CONFLICTS = [
+    (("甘草", "炙甘草"), ("海藻", "大戟", "甘遂", "芫花")),
+    (("附子", "川乌", "草乌"), ("半夏", "瓜蒌", "贝母", "白蔹", "白及")),
+    (("藜芦",), ("人参", "党参", "玄参", "丹参", "沙参", "白芍", "赤芍", "细辛")),
+]
+
+_TOXIC_HERBS = {name for name, info in _HERB_INFO.items() if "有毒" in info["nature"]}
+
+
+def build_recognize_prompt(data: dict[str, Any]) -> str:
+    """把待识别药材组装成一段"识别提示词"（为真实模型预留，本地引擎忽略指令）。"""
+    herbs = [h for h in (data.get("herbs") or []) if str(h.get("name") or "").strip()]
+    lines = ["# 任务：请分析下列药材的性味归经、功效主治与配伍禁忌",
+             "# 要求：逐味返回结构化结果，另附配伍解析与煎服建议。"]
+    if herbs:
+        rows = ["；".join(f"{h.get('name')} {h.get('dose') or ''}{h.get('unit') or ''}"
+                         for h in herbs if str(h.get("name") or "").strip())]
+        lines.append("药材清单：" + rows[0])
+    if (data.get("full_text") or "").strip():
+        lines.append("整方原文：\n" + data["full_text"].strip())
+    return "\n".join(lines)
+
+
+def _extract_herbs_from_text(text: str) -> list[dict]:
+    """从整方文本中按已知药名（长名优先）提取药材与剂量，返回 [{name, dose, unit}]。"""
+    if not text:
+        return []
+    names = sorted(_HERB_INFO, key=len, reverse=True)
+    pat = re.compile("|".join(re.escape(n) for n in names))
+    found = []
+    for m in pat.finditer(text):
+        tail = text[m.end():m.end() + 14]
+        dm = re.match(r"\s*(\d+(?:\.\d+)?)\s*(克|g|G|毫克|毫升|ml|枚|片|包|剂|钱)?", tail)
+        if dm:
+            dose, unit = dm.group(1), (dm.group(2) or "g")
+        else:
+            dose, unit = "", ""
+        found.append({"name": m.group(0), "dose": dose, "unit": unit})
+    return found
+
+
+def _conflict_hints(names: list[str]) -> list[str]:
+    hints = []
+    for group_a, group_b in _CONFLICTS:
+        hits_a = [n for n in names if n in group_a]
+        hits_b = [n for n in names if n in group_b]
+        if hits_a and hits_b:
+            hints.append(f"“{hits_a[0]}”与“{hits_b[0]}”属配伍禁忌（十八反/十九畏），请务必复核。")
+    return hints
+
+
+def mock_recognize(data: dict[str, Any]) -> dict[str, Any]:
+    """模拟"药方识别"入口：逐味分析药效，附配伍解析与煎服建议。"""
+    build_recognize_prompt(data)          # 组装提示词（为真实模型预留）
+    herbs: list[dict] = []
+    for h in data.get("herbs") or []:
+        if str(h.get("name") or "").strip():
+            herbs.append(h)
+    if (data.get("full_text") or "").strip():
+        herbs += _extract_herbs_from_text(data["full_text"])
+
+    # 去重（保留首次出现，保持录入顺序）
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for h in herbs:
+        name = str(h.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        merged.append({"name": name,
+                       "dose": str(h.get("dose") or "").strip(),
+                       "unit": str(h.get("unit") or "g").strip()})
+    if not merged:
+        raise ValueError("未识别到任何药材，请检查输入。")
+
+    entries = []
+    for h in merged:
+        info = _HERB_INFO.get(h["name"])
+        entries.append({
+            **h,
+            "nature_flavor": info["nature"] if info else "",
+            "meridian": info["meridian"] if info else "",
+            "effects": (info["effects"] if info
+                        else "（本地库暂未收录该药材，接入真实模型后可查询药效）"),
+            "notes": info["notes"] if info else "",
+        })
+
+    names = [e["name"] for e in entries]
+    conflicts = _conflict_hints(names)
+
+    # 配伍解析：按药性寒温做粗略归纳 + 禁忌提示
+    warm = sum(1 for e in entries if any(k in e["nature_flavor"] for k in ("温", "热")))
+    cool = sum(1 for e in entries if any(k in e["nature_flavor"] for k in ("寒", "凉")))
+    if warm and not cool:
+        tendency = f"{warm} 味偏温/热，全方以温补散寒为总体倾向"
+    elif cool and not warm:
+        tendency = f"{cool} 味偏寒/凉，全方以清热泻火为总体倾向"
+    elif warm and cool:
+        tendency = f"温药 {warm} 味、寒凉药 {cool} 味兼见，寒热并用，需注意相互制约"
+    else:
+        tendency = "药性以平和为主，未呈现明显寒热偏倾"
+    interaction_parts = [f"本方共 {len(entries)} 味药，{tendency}。"]
+    if conflicts:
+        interaction_parts.append("配伍禁忌提醒：" + "".join(conflicts))
+    else:
+        interaction_parts.append("未检出十八反/十九畏等明显配伍禁忌，但用药仍应结合辨证审慎。")
+    interaction = "".join(interaction_parts)
+
+    # 煎服确认
+    toxic = [e["name"] for e in entries if e["name"] in _TOXIC_HERBS]
+    if toxic:
+        decoction = (f"建议水煎服，一日一剂，分早晚两次温服。"
+                     f"注意：含毒性药材（{'、'.join(toxic)}），须遵医嘱炮制、先煎并严格控制用量。")
+    else:
+        decoction = "建议水煎服，一日一剂，分早晚两次温服，饭后半小时服用，忌生冷油腻。"
+
+    return {
+        "herbs": entries,
+        "interaction": interaction,
+        "decoction": decoction,
+        "warnings": "以上为虚拟模型模拟生成的识别内容，仅供功能演示，不构成医疗建议。",
+        "model": MODEL_NAME,
+    }

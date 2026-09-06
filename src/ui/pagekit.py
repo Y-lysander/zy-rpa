@@ -1,7 +1,10 @@
-"""内容页基础组件：自绘标题/副标题、可注入的内容面板，以及统一样式辅助。"""
-from PySide6.QtCore import Qt, QRectF
+"""内容页基础组件：自绘标题/副标题、可注入的内容面板、统一样式辅助，
+以及跨页面复用的滚动区（丝滑滚动）与结果区段卡片。"""
+from PySide6.QtCore import Qt, QAbstractAnimation, QEasingCurve, QPropertyAnimation, QRectF
 from PySide6.QtGui import QFont, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
+)
 
 from ..core import theme
 from .dark import is_dark
@@ -133,3 +136,128 @@ def style_panel(widget, dark=None):
         f"QProgressBar::chunk {{ background: {accent}; border-radius: 6px; }}"
     )
     return dark
+
+
+# ---------------------------------------------------------------------------
+# 跨页面共享：丝滑滚动区 + 结果区段卡片
+# ---------------------------------------------------------------------------
+class SmoothScrollArea(QScrollArea):
+    """滚轮驱动垂直滚动，内容向目标位置平滑过渡（OutCubic）。
+
+    连续滚动时取消前一段动画并重定向到新目标，避免"一跳一跳"的生硬感。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._anim = None
+
+    def _stop(self):
+        a = self._anim
+        self._anim = None
+        if a is None:
+            return
+        # 动画可能已因 finished 被 deleteLater 销毁，捕获该竞态
+        try:
+            a.stop()
+        except RuntimeError:
+            pass
+        try:
+            a.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _anim_finished(self, a):
+        if self._anim is a:
+            self._anim = None
+        try:
+            a.deleteLater()
+        except RuntimeError:
+            pass
+
+    def wheelEvent(self, e):
+        dy = e.angleDelta().y()
+        if dy == 0:
+            return
+        bar = self.verticalScrollBar()
+        start = bar.value()
+        target = start - dy
+        target = max(bar.minimum(), min(bar.maximum(), target))
+        if target == start:
+            return
+        self._stop()
+        a = QPropertyAnimation(bar, b"value", self)
+        a.setDuration(260)
+        a.setStartValue(start)
+        a.setEndValue(target)
+        a.setEasingCurve(QEasingCurve.OutCubic)
+        a.finished.connect(lambda: self._anim_finished(a))
+        self._anim = a
+        a.start()
+        e.accept()
+
+
+class SectionCard(QWidget):
+    """结果区段：强调色标题 + 一条细横线作装饰 + 内容行，支持一键主题刷新。
+
+    不使用圆角卡片盒子，避免"卡片套卡片"，仅以标题/细线/内容排版。
+    """
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self._rows = []                      # (widget, role)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(2, 0, 2, 0)
+        v.setSpacing(7)
+        self.title_lab = QLabel(title)
+        self.title_lab.setWordWrap(True)
+        f = QFont(self.title_lab.font()); f.setPointSize(11); f.setBold(True)
+        self.title_lab.setFont(f)
+        v.addWidget(self.title_lab)
+        self.line = QWidget(self)
+        self.line.setFixedHeight(1)
+        v.addWidget(self.line)
+        self._lay = v
+        self.refresh()
+
+    def add_text(self, text, role="body"):
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._lay.addWidget(lab)
+        self._rows.append((lab, role))
+        self.refresh_row(lab, role)
+
+    def add_herb_row(self, name, dose, unit):
+        row = QWidget(self)
+        rh = QHBoxLayout(row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.setSpacing(10)
+        n = QLabel(name); n.setWordWrap(False)
+        d = QLabel(f"{dose} {unit}"); d.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._rows.append((n, "herb")); self._rows.append((d, "sub"))
+        rh.addWidget(n, 1); rh.addWidget(d)
+        self._lay.addWidget(row)
+        self.refresh_row(n, "herb"); self.refresh_row(d, "sub")
+
+    def refresh_row(self, lab, role):
+        dark = is_dark(self)
+        if role == "accent":
+            color = theme.st("accent", dark)
+        elif role == "sub":
+            color = theme.st("sub_text", dark)
+        else:
+            color = theme.st("title_text", dark)
+        if role == "herb":
+            f = QFont(lab.font()); f.setPointSize(11)
+            lab.setFont(f)
+        lab.setStyleSheet(f"color: {color.name()}; background: transparent;")
+
+    def refresh(self):
+        dark = is_dark(self)
+        self.title_lab.setStyleSheet(
+            f"color: {theme.st('accent', dark).name()}; background: transparent;")
+        self.line.setStyleSheet(
+            f"background: {theme.st('panel_border', dark).name()}; border: none;")
+        for lab, role in self._rows:
+            self.refresh_row(lab, role)
+        self.update()

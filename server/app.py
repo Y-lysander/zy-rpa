@@ -3,6 +3,7 @@
 接口：
     GET  /health            健康探活（GUI 用于检测服务是否已启动）
     POST /api/prescribe     药方开方（单次对话，直接给出药方，不询问）
+    POST /api/recognize     药方识别（逐味分析药效，附配伍与煎服建议）
 
 启动：
     python -m server.run
@@ -50,6 +51,19 @@ class PrescribeResponse(BaseModel):
     model: str
 
 
+class RecognizeRequest(BaseModel):
+    herbs: list[dict] = []      # [{"name", "dose", "unit"}]
+    full_text: str = ""         # 整方文本（可选）
+
+
+class RecognizeResponse(BaseModel):
+    herbs: list[dict]
+    interaction: str
+    decoction: str
+    warnings: str
+    model: str
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": mock_ai.MODEL_NAME}
@@ -60,3 +74,10 @@ def prescribe(req: PrescribeRequest):
     """虚拟开方：单次对话，每次独立，直接给出药方。"""
     data = req.model_dump()
     return mock_ai.mock_complete(data)
+
+
+@app.post("/api/recognize", response_model=RecognizeResponse)
+def recognize(req: RecognizeRequest):
+    """虚拟识别：逐味分析药效，附配伍解析与煎服建议。"""
+    data = req.model_dump()
+    return mock_ai.mock_recognize(data)

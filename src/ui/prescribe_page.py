@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import (
-    Qt, QAbstractAnimation, QEasingCurve, QPropertyAnimation, QThread, QVariantAnimation,
+    Qt, QAbstractAnimation, QEasingCurve, QThread, QVariantAnimation,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QFileDialog, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QStackedLayout,
@@ -27,7 +27,7 @@ from ..core.ai_client import AIClientError, VirtualAIClient
 from ..core.config import Config
 from ..core.pdf_export import export_prescription_pdf
 from .dark import is_dark
-from .pagekit import BasePage, section_label, style_panel
+from .pagekit import BasePage, SectionCard, SmoothScrollArea, section_label, style_panel
 
 
 # ---- 异步开方线程 ----
@@ -49,130 +49,6 @@ class PrescribeWorker(QThread):
             self.err.emit(str(e))
         except Exception as e:                      # noqa: BLE001
             self.err.emit(f"开方失败：{e}")
-
-
-# ---- 带平滑过渡的滚动区 ----
-class SmoothScrollArea(QScrollArea):
-    """滚轮驱动垂直滚动，内容向目标位置平滑过渡（OutCubic）。
-
-    连续滚动时取消前一段动画并重定向到新目标，避免"一跳一跳"的生硬感。
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._anim = None
-
-    def _stop(self):
-        a = self._anim
-        self._anim = None
-        if a is None:
-            return
-        # 动画可能已因 finished 被 deleteLater 销毁，捕获该竞态
-        try:
-            a.stop()
-        except RuntimeError:
-            pass
-        try:
-            a.deleteLater()
-        except RuntimeError:
-            pass
-
-    def _anim_finished(self, a):
-        if self._anim is a:
-            self._anim = None
-        try:
-            a.deleteLater()
-        except RuntimeError:
-            pass
-
-    def wheelEvent(self, e):
-        dy = e.angleDelta().y()
-        if dy == 0:
-            return
-        bar = self.verticalScrollBar()
-        start = bar.value()
-        target = start - dy
-        target = max(bar.minimum(), min(bar.maximum(), target))
-        if target == start:
-            return
-        self._stop()
-        a = QPropertyAnimation(bar, b"value", self)
-        a.setDuration(260)
-        a.setStartValue(start)
-        a.setEndValue(target)
-        a.setEasingCurve(QEasingCurve.OutCubic)
-        a.finished.connect(lambda: self._anim_finished(a))
-        self._anim = a
-        a.start()
-        e.accept()
-
-
-# ---- 结果区段（标题 + 细横线 + 内容，无卡片盒） ----
-class SectionCard(QWidget):
-    """结果区段：强调色标题 + 一条细横线作装饰 + 内容行，支持一键主题刷新。
-
-    不再使用圆角卡片盒子，避免"卡片套卡片"，仅以标题/细线/内容排版。
-    """
-
-    def __init__(self, title, parent=None):
-        super().__init__(parent)
-        self._rows = []                      # (widget, role)
-        v = QVBoxLayout(self)
-        v.setContentsMargins(2, 0, 2, 0)
-        v.setSpacing(7)
-        self.title_lab = QLabel(title)
-        self.title_lab.setWordWrap(True)
-        f = QFont(self.title_lab.font()); f.setPointSize(11); f.setBold(True)
-        self.title_lab.setFont(f)
-        v.addWidget(self.title_lab)
-        self.line = QWidget(self)
-        self.line.setFixedHeight(1)
-        v.addWidget(self.line)
-        self._lay = v
-        self.refresh()
-
-    def add_text(self, text, role="body"):
-        lab = QLabel(text)
-        lab.setWordWrap(True)
-        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._lay.addWidget(lab)
-        self._rows.append((lab, role))
-        self.refresh_row(lab, role)
-
-    def add_herb_row(self, name, dose, unit):
-        row = QWidget(self)
-        rh = QHBoxLayout(row)
-        rh.setContentsMargins(0, 0, 0, 0)
-        rh.setSpacing(10)
-        n = QLabel(name); n.setWordWrap(False)
-        d = QLabel(f"{dose} {unit}"); d.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._rows.append((n, "herb")); self._rows.append((d, "sub"))
-        rh.addWidget(n, 1); rh.addWidget(d)
-        self._lay.addWidget(row)
-        self.refresh_row(n, "herb"); self.refresh_row(d, "sub")
-
-    def refresh_row(self, lab, role):
-        dark = is_dark(self)
-        if role == "accent":
-            color = theme.st("accent", dark)
-        elif role == "sub":
-            color = theme.st("sub_text", dark)
-        else:
-            color = theme.st("title_text", dark)
-        if role == "herb":
-            f = QFont(lab.font()); f.setPointSize(11)
-            lab.setFont(f)
-        lab.setStyleSheet(f"color: {color.name()}; background: transparent;")
-
-    def refresh(self):
-        dark = is_dark(self)
-        self.title_lab.setStyleSheet(
-            f"color: {theme.st('accent', dark).name()}; background: transparent;")
-        self.line.setStyleSheet(
-            f"background: {theme.st('panel_border', dark).name()}; border: none;")
-        for lab, role in self._rows:
-            self.refresh_row(lab, role)
-        self.update()
 
 
 class PrescribePage(BasePage):
@@ -348,6 +224,11 @@ class PrescribePage(BasePage):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._do_export)
         bar.addWidget(self.export_btn)
+        self.reset_btn = QPushButton("重置")
+        self.reset_btn.setObjectName("Ghost")
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.clicked.connect(self._on_reset)
+        bar.addWidget(self.reset_btn)
         col.addLayout(bar)
 
         self.page_scroll = scroll = SmoothScrollArea(page)
@@ -574,6 +455,31 @@ class PrescribePage(BasePage):
         self._worker.err.connect(self._show_error)
         self._worker.finished.connect(lambda: self.go_btn.setEnabled(True))
         self._worker.start()
+
+    # ---- 重置 ----
+    def _on_reset(self):
+        """清空已填表单并回到输入界面。"""
+        self.sy.clear()
+        self.hist.clear()
+        self.age.clear()
+        self.meds.clear()
+        self.constitution.clear()
+        self.allergy.clear()
+        self.tongue.clear()
+        self.lifestyle.clear()
+        self.menstruation.clear()
+        checked = self.gender_group.checkedButton()
+        if checked is not None:
+            checked.setChecked(False)
+        self.menstruation_cell.setVisible(True)
+        self.hint.setText("仅「症状」必填，其余可选。")
+        self._style_labels(warn=False)
+        self.cards = []
+        self._last_data = None
+        self._last_result = None
+        self.status.setText("填写病情信息后点击「开方」")
+        self.export_btn.setEnabled(False)
+        self._fade_to(0)
 
     # ---- 导出 PDF ----
     def _do_export(self):

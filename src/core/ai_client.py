@@ -1,7 +1,7 @@
 """虚拟 AI 服务客户端与自动拉起。
 
 GUI 经 HTTP 调用本地虚拟服务（server/）。未接入真实云端模型，
-接口层保持简单：health 探活 + prescribe 开方。
+接口层保持简单：health 探活 + prescribe 开方 + recognize 识别。
 """
 from __future__ import annotations
 
@@ -35,8 +35,15 @@ class VirtualAIClient:
 
     # ---- 开方 ----
     def prescribe(self, data: dict, timeout: float = 120.0) -> dict:
+        return self._post("/api/prescribe", data, timeout)
+
+    # ---- 识别 ----
+    def recognize(self, data: dict, timeout: float = 120.0) -> dict:
+        return self._post("/api/recognize", data, timeout)
+
+    def _post(self, path: str, data: dict, timeout: float) -> dict:
         req = urllib.request.Request(
-            f"{self.base}/api/prescribe",
+            f"{self.base}{path}",
             data=json.dumps(data).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
