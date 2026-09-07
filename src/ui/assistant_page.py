@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import theme
-from ..core.ai_client import AIClientError, VirtualAIClient
+from ..core.ai_client import AIClient, AIClientError
+from ..core.md_parser import md_to_html
 from .dark import is_dark
 from .pagekit import (
     AnimatedButton, AutoGrowTextEdit, BasePage, SmoothScrollArea, style_panel,
@@ -37,9 +38,9 @@ class ChatWorker(QThread):
 
     def run(self):
         try:
-            self._client.ensure_running()
-            result = self._client.chat(self._messages)
-            self.done.emit(result)
+            raw = self._client.fetch_chat(list(self._messages))
+            reply = raw.get("reply", "") if isinstance(raw, dict) else raw
+            self.done.emit(reply)
         except AIClientError as e:
             self.err.emit(str(e))
         except Exception as e:                      # noqa: BLE001
@@ -72,22 +73,29 @@ class ChatBubble(QTextEdit):
 
     PAD_W = 24          # QSS 左右 padding（12+12）
     PAD_H = 18          # QSS 上下 padding（8+8）+ 少量余量
+    MARGIN = 6          # document().setDocumentMargin() 值（左右各 6px）
+    HEADROOM = 8        # 额外余量，防“位置足够却触边多折行”
 
-    def __init__(self, text, role, max_w, parent=None):
+    def __init__(self, text, role, max_w, parent=None, markdown=False):
         super().__init__(parent)
         self.role = role
+        self._markdown = markdown
         self.setReadOnly(True)
+        self._has_table = markdown and "|" in text   # 用原始 Markdown 判断，勿用 toPlainText()
         self.setFrameShape(QFrame.NoFrame)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.document().setDocumentMargin(0)
+        self.document().setDocumentMargin(self.MARGIN)
         # QTextEdit 视口默认用调色板 Base 自绘，会盖住 QSS 背景，需关掉
         self.viewport().setAutoFillBackground(False)
         f = self.font(); f.setPixelSize(13); self.setFont(f)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.setPlainText(text)
+        if markdown:
+            self.setHtml(md_to_html(text))
+        else:
+            self.setPlainText(text)
         self.refresh()
         self.set_max_width(max_w)
 
@@ -96,15 +104,38 @@ class ChatBubble(QTextEdit):
         self._max_w = max_w
         self._apply_size()
 
+    def _natural_width(self, doc):
+        """取文档“不折行”时的真实宽度（按实际加载字体量取）。
+
+        fontMetrics 用的是系统默认字体度量，可能与运行时中文字体不同导致
+        宽度偏小、单行内容被多余折行；这里直接用文档排版自身的最大行宽，
+        能自动适配用户系统的真实字体。
+        """
+        doc.setTextWidth(1 << 24)          # 超宽，避免折行
+        best = 0
+        block = doc.begin()
+        while block.isValid():
+            try:
+                maxw = int(block.layout().maximumWidth())
+            except (AttributeError, RuntimeError):
+                maxw = 0
+            if maxw > best:
+                best = maxw
+            block = block.next()
+        return best
+
     def _apply_size(self):
-        fm = self.fontMetrics()
-        lines = self.toPlainText().split("\n")
-        text_w = max([fm.horizontalAdvance(ln) for ln in lines] + [0])
-        w = min(self._max_w, text_w + self.PAD_W)
-        # 直接给文档布局定宽，高度可同步计算，不依赖布局时序
-        self.document().setTextWidth(w - self.PAD_W)
-        h = int(self.document().documentLayout().documentSize().height()) + self.PAD_H
-        self.setFixedSize(w, max(h, 28))
+        doc = self.document()
+        if self._has_table:
+            w = self._max_w
+        else:
+            natural = int(self._natural_width(doc))
+            # 需同时容纳：文字本身宽度 + 文档左右 margin + QSS 左右 padding
+            w = min(self._max_w, natural + self.PAD_W + 2 * self.MARGIN + self.HEADROOM)
+        self.setFixedWidth(w)
+        doc.setTextWidth(max(w - self.PAD_W, 1))
+        h = int(doc.documentLayout().documentSize().height())
+        self.setFixedHeight(max(h + self.PAD_H, 28))
 
     def refresh(self):
         dark = is_dark(self)
@@ -129,7 +160,7 @@ class AssistantPage(BasePage):
 
     def __init__(self, parent=None):
         super().__init__("AI助手", "与 AI 对话，解答中药、方剂与症状调理等问题")
-        self.client = VirtualAIClient()
+        self.client = AIClient()
         self._worker = None
         self._messages = []        # 对话历史 [{"role", "content"}]
         self._bubbles = []         # 已挂载的气泡控件（不含占位）
@@ -184,7 +215,8 @@ class AssistantPage(BasePage):
 
     # ---- 消息渲染 ----
     def _append_bubble(self, text, role):
-        bubble = ChatBubble(text, role, self._max_bubble_w(), self.chat_cw)
+        bubble = ChatBubble(text, role, self._max_bubble_w(), self.chat_cw,
+                            markdown=(role == "ai"))
         align = Qt.AlignRight if role == "user" else Qt.AlignLeft
         self.chat_lay.insertWidget(self.chat_lay.count() - 1, bubble, 0, align)
         self._bubbles.append(bubble)
@@ -348,8 +380,8 @@ class AssistantPage(BasePage):
         self._append_ai(
             "你好，我是中药 AI 助手。可以为您解答药材功效、方剂配伍、症状调理等问题。")
 
-    def _on_reply(self, result):
-        reply = (result.get("reply") or "").strip()
+    def _on_reply(self, reply):
+        reply = (reply or "").strip()
         self._messages.append({"role": "assistant", "content": reply})
         self._remove_typing()
         self._append_ai(reply or "（AI 未返回内容）")

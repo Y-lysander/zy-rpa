@@ -1,85 +1,73 @@
-"""虚拟 AI 服务客户端与自动拉起。
+"""AI 客户端：直连 DeepSeek 云端模型。
 
-GUI 经 HTTP 调用本地虚拟服务（server/）。未接入真实云端模型，
-接口层保持简单：health 探活 + prescribe 开方 + recognize 识别。
+已移除本地 server/ 链路。GUI 各页面通过 fetch_prescribe / fetch_recognize /
+fetch_chat 获取模型输出的**原始 Markdown 文本**，再由 worker 用 md_parser 归一
+成结构化 dict 或富文本显示。
+
+配置（供应商/模型/API Key）来自用户级 UserConfig（~/zy_rpa/config.json），
+未配置时会抛 AIClientError 提示先在设置中添加模型。
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
-import time
-import urllib.request
-
+from .ai_prompts import (
+    build_prescription_prompt,
+    build_recognize_prompt,
+    chat_messages_with_system,
+)
 from .config import Config
+from .deepseek_client import DeepSeekClient, DeepSeekError
+from .user_config import UserConfig
 
 
 class AIClientError(Exception):
-    """虚拟 AI 服务调用失败。"""
+    """AI 调用失败（未配置/网络/模型报错）。"""
 
 
-class VirtualAIClient:
-    """虚拟 AI 服务 HTTP 客户端。"""
+class AIClient:
+    """对接 DeepSeek 模型的统一客户端。"""
 
-    def __init__(self, host: str = Config.AI_HOST, port: int = Config.AI_PORT):
-        self.base = f"http://{host}:{port}"
+    def __init__(self, user_cfg: UserConfig = None):
+        # 每次调用时 load()，确保设置页新保存的 key/模型能被读取
+        self._ucfg = user_cfg or UserConfig()
 
-    # ---- 探活 ----
-    def health(self, timeout: float = 2.0):
+    # ---- 凭据 ----
+    def _credentials(self) -> tuple[str, str]:
+        self._ucfg.load()
+        api_key = (self._ucfg.get("api_key") or "").strip()
+        model = (self._ucfg.get("ai_model") or Config.DEFAULT_MODEL
+                 or "deepseek-v4-flash").strip()
+        if not api_key:
+            raise AIClientError("尚未配置 AI 模型，请在「设置」中添加模型并填写 API Key")
+        return model, api_key
+
+    def _chat_text(self, messages: list, timeout: float) -> str:
+        model, api_key = self._credentials()
         try:
-            with urllib.request.urlopen(f"{self.base}/health", timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except Exception:
-            return None
+            return DeepSeekClient(api_key).chat_completion(messages, model, timeout)
+        except DeepSeekError as e:
+            raise AIClientError(str(e))
+        except Exception as e:                          # noqa: BLE001
+            raise AIClientError(f"AI 调用失败：{e}")
 
-    # ---- 开方 ----
-    def prescribe(self, data: dict, timeout: float = 120.0) -> dict:
-        return self._post("/api/prescribe", data, timeout)
+    # ---- 开方/识别/对话（统一文本层入口）----
+    def fetch_prescribe(self, data: dict, timeout: float = 180.0) -> str:
+        """组装开方提示词并发给模型，返回原始 Markdown 文本。"""
+        return self._chat_text(
+            [{"role": "user", "content": build_prescription_prompt(data)}], timeout)
 
-    # ---- 识别 ----
-    def recognize(self, data: dict, timeout: float = 120.0) -> dict:
-        return self._post("/api/recognize", data, timeout)
+    def fetch_recognize(self, data: dict, timeout: float = 180.0) -> str:
+        """组装识别提示词并发给模型，返回原始 Markdown 文本。"""
+        return self._chat_text(
+            [{"role": "user", "content": build_recognize_prompt(data)}], timeout)
 
-    # ---- 助手对话 ----
-    def chat(self, messages: list, timeout: float = 120.0) -> dict:
-        """发送完整对话历史（[{role, content}]），返回一条助手回复。"""
-        return self._post("/api/chat", {"messages": messages}, timeout)
+    def fetch_chat(self, messages: list, timeout: float = 180.0) -> str:
+        """把系统提示词拼到最前并发送完整对话历史，返回原始 Markdown 文本。"""
+        return self._chat_text(chat_messages_with_system(messages), timeout)
 
-    def _post(self, path: str, data: dict, timeout: float) -> dict:
-        req = urllib.request.Request(
-            f"{self.base}{path}",
-            data=json.dumps(data).encode("utf-8"),
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
+    # ---- 供设置页/向导校验 API Key ----
+    def verify(self, api_key: str) -> tuple[bool, str]:
+        """校验给定 API Key：成功 (True, '')，失败 (False, 错误信息)。"""
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            raise AIClientError(f"服务返回错误 HTTP {e.code}: {e.read().decode('utf-8')}")
-        except Exception as e:
-            raise AIClientError(f"无法连接服务：{e}")
-
-    # ---- 自动拉起服务 ----
-    def ensure_running(self, timeout: float = 20.0) -> bool:
-        """确保本地服务可连接；未就绪则后台拉起 server/run_server.py 并等待。"""
-        if self.health():
-            return True
-        server_py = str(Config.ROOT / "server" / "run_server.py")
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        try:
-            subprocess.Popen(
-                [sys.executable, server_py],
-                cwd=str(Config.ROOT),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=flags, close_fds=True,
-            )
-        except Exception:
-            pass
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.health(timeout=1.0):
-                return True
-            time.sleep(0.4)
-        return False
+            return DeepSeekClient(api_key.strip()).verify_api_key()
+        except Exception as e:                          # noqa: BLE001
+            return False, str(e)

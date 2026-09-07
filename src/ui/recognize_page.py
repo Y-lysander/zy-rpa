@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import theme
-from ..core.ai_client import AIClientError, VirtualAIClient
+from ..core.ai_client import AIClient, AIClientError
 from ..core.config import Config
+from ..core.md_parser import parse_recognize
 from ..core.pdf_export import export_recognize_pdf
 from ..data.herbs import HERB_NAMES, search
 from .dark import is_dark
@@ -323,8 +324,8 @@ class RecognizeWorker(QThread):
 
     def run(self):
         try:
-            self._client.ensure_running()
-            result = self._client.recognize(self._data)
+            raw = self._client.fetch_recognize(self._data)
+            result = raw if isinstance(raw, dict) else parse_recognize(raw)
             self.done.emit(result)
         except AIClientError as e:
             self.err.emit(str(e))
@@ -375,7 +376,7 @@ class RecognizePage(BasePage):
 
     def __init__(self, parent=None):
         super().__init__("药方识别", "逐项录入药材或粘贴整方，AI 分析药效与配伍")
-        self.client = VirtualAIClient()
+        self.client = AIClient()
         self._worker = None
         self._fade_anim = None
         self._rows = []
@@ -656,17 +657,17 @@ class RecognizePage(BasePage):
                 c.add_text(f"注意：{h['notes']}", role="sub")
             self._append_card(c)
 
-        c = SectionCard("配伍解析", self.cw)
-        c.add_text(result.get("interaction", ""), role="body")
-        self._append_card(c)
+        for title, key in (("配伍解析", "interaction"), ("煎服确认", "decoction")):
+            val = result.get(key)
+            if val:
+                c = SectionCard(title, self.cw)
+                c.add_text(val, role="body")
+                self._append_card(c)
 
-        c = SectionCard("煎服确认", self.cw)
-        c.add_text(result.get("decoction", ""), role="body")
-        self._append_card(c)
-
-        c = SectionCard("备注", self.cw)
-        c.add_text(result.get("warnings", ""), role="sub")
-        self._append_card(c)
+        if result.get("warnings"):
+            c = SectionCard("备注", self.cw)
+            c.add_text(result["warnings"], role="sub")
+            self._append_card(c)
         self._fit_content()
 
     def _show_error(self, msg):

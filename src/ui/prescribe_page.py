@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import theme
-from ..core.ai_client import AIClientError, VirtualAIClient
+from ..core.ai_client import AIClient, AIClientError
 from ..core.config import Config
+from ..core.md_parser import parse_prescription
 from ..core.pdf_export import export_prescription_pdf
 from .dark import is_dark
 from .pagekit import (
@@ -45,8 +46,8 @@ class PrescribeWorker(QThread):
 
     def run(self):
         try:
-            self._client.ensure_running()
-            result = self._client.prescribe(self._data)
+            raw = self._client.fetch_prescribe(self._data)
+            result = raw if isinstance(raw, dict) else parse_prescription(raw)
             self.done.emit(result)
         except AIClientError as e:
             self.err.emit(str(e))
@@ -60,7 +61,7 @@ class PrescribePage(BasePage):
 
     def __init__(self, parent=None):
         super().__init__("药方开方", "填写病情信息，AI 自动生成中药方")
-        self.client = VirtualAIClient()
+        self.client = AIClient()
         self._worker = None
         self._fade_anim = None
         self._build()
@@ -408,9 +409,10 @@ class PrescribePage(BasePage):
                 c.add_text(val, role="body")
                 self._append_card(c)
 
-        c = SectionCard("备注", self.cw)
-        c.add_text(result.get("warnings", ""), role="sub")
-        self._append_card(c)
+        if result.get("warnings"):
+            c = SectionCard("备注", self.cw)
+            c.add_text(result["warnings"], role="sub")
+            self._append_card(c)
         self._fit_content()
 
     def _show_error(self, msg):

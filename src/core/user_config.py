@@ -17,6 +17,10 @@ class UserConfig:
     DEFAULTS = {
         "ui_style": "macos",       # 界面风格：macos | win11
         "theme_mode": "system",    # 深浅色：system | light | dark
+        # ---- AI 模型配置 ----
+        "ai_provider": "deepseek",                 # 供应商
+        "ai_model": "deepseek-v4-flash",           # 模型
+        "api_key": "",                             # API Key（自动保存）
     }
 
     def __init__(self, path: Path = None):

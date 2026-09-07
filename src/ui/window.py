@@ -530,6 +530,8 @@ class AppWindow(QWidget):
             item.set_active(item.key == key)
         if key not in self.pages or self.stack.currentWidget() is self.pages[key]:
             return
+        if key == "settings":
+            self.pages["settings"].refresh_ai_state()
         if self._switch_anim is not None:
             self._switch_anim.stop(); self._switch_anim = None
             self._reset_switch_widgets()

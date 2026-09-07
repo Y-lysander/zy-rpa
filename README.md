@@ -10,15 +10,14 @@
 ## 快速开始
 
 ```bash
-pip install PySide6 fastapi "uvicorn[standard]" reportlab
+pip install PySide6 reportlab
 python main.py
 ```
 
-首次「开方」时，应用会自动在本地拉起虚拟 AI 服务（`server/`，端口 8123）；
-也可手动启动：`python -m server.run_server`。
+首次使用前，需先在「设置 → AI 模型配置」中添加模型并填写 DeepSeek API Key
+（保存前自动校验有效性与网络连通性）。
 
-> 当前不接入真实云端模型，`server/` 为本地虚拟 AI（规则引擎模拟开方），
-> 后续可无缝替换为真实供应商 API。
+> 当前接入 DeepSeek 云端模型（`deepseek-v4-flash`），API Key 仅保存在本地配置中。
 
 ## 界面构成（左侧导航）
 
@@ -27,11 +26,10 @@ python main.py
 | **药方开方** | ✅ 已实现：完整表单 → AI 生成药方 → 分卡片展示、可导出 PDF |
 | **药方识别** | 逐项输入药材名称/计量 → AI 分析药效并展示、可导出 PDF（待实现） |
 | **AI助手** | 对话改进/调整药方；可实时查看药方状态（药材/计量/煎服方式等） |
-| **设置** | 深浅色与系统风格切换；AI 模型供应商切换、API Key 配置 |
+| **设置** | 深浅色与系统风格切换；AI 模型添加/更换/删除与 API Key 配置 |
 | **关于** | 简介与免责声明 |
 
-> 开方功能已实现（基于本地虚拟 AI）；识别/助手的 AI 功能待实现，
-> 细节见 `PRD.md` 末尾待澄清项。
+> 开方/识别/助手均接入云端 DeepSeek 模型。
 
 ## 项目结构
 
@@ -39,11 +37,11 @@ python main.py
 zy_rpa/
   main.py             # GUI 唯一入口（python main.py）
   PRD.md              # 产品需求文档（含待澄清细节）
-  server/             # 虚拟 AI 服务（FastAPI：app.py / 规则引擎 mock_ai.py / 启动 run_server.py）
   src/
     core/             # 应用配置(Config)、主题/风格(theme)、用户偏好持久化(user_config)、
-                      # AI 客户端(ai_client)、PDF 导出(pdf_export)
-    ui/               # 主窗口(window)、页面(settings/about/prescribe/placeholder)、共享组件(pagekit/dark)
+                      # AI 客户端(ai_client)、DeepSeek 客户端(deepseek_client)、PDF 导出(pdf_export)
+    ui/               # 主窗口(window)、页面(settings/about/prescribe/recognize/assistant)、
+                      # 配置向导(model_wizard)、共享组件(pagekit/dark)
   Data/               # 动态数据目录（AI 生成/导出产物，不入版本库）
 ```
 
