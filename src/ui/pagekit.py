@@ -1,11 +1,13 @@
 """内容页基础组件：自绘标题/副标题、可注入的内容面板、统一样式辅助，
 以及跨页面复用的滚动区（丝滑滚动）与结果区段卡片。"""
+import math
+
 from PySide6.QtCore import (
     QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRectF, Qt,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..core import theme
@@ -191,6 +193,37 @@ class AnimatedButton(QPushButton):
 # ---------------------------------------------------------------------------
 # 跨页面共享：丝滑滚动区 + 结果区段卡片
 # ---------------------------------------------------------------------------
+class AutoGrowTextEdit(QPlainTextEdit):
+    """动态高度多行输入框：默认单行（提示词落在底部短线上），
+    内容需要换行时逐行增高；到达 max_rows 行后改为内部滚动。"""
+
+    def __init__(self, parent=None, max_rows=5, min_rows=1):
+        super().__init__(parent)
+        self._max_rows = max_rows
+        self._min_rows = min_rows
+        self._v_pad = 18          # QSS 上下 padding(4+6) + 文档边距(8)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        f = self.font(); f.setPixelSize(13); self.setFont(f)
+        self.textChanged.connect(self._update_height)
+        self._update_height()
+
+    def _update_height(self):
+        # 用字体度量按当前可视宽度直接数折行数，不依赖文档排版时序
+        lh = self.fontMetrics().height()
+        eff_w = max(40, self.viewport().width() - 8)
+        fm = self.fontMetrics()
+        rows = 0
+        for seg in self.toPlainText().split("\n"):
+            rows += 1 if not seg else max(1, math.ceil(fm.horizontalAdvance(seg) / eff_w))
+        rows = max(self._min_rows, min(rows, self._max_rows))
+        self.setFixedHeight(rows * lh + self._v_pad)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._update_height()
+
+
 class SmoothScrollArea(QScrollArea):
     """滚轮驱动垂直滚动，内容向目标位置平滑过渡（OutCubic）。
 

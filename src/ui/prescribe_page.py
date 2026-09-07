@@ -28,7 +28,8 @@ from ..core.config import Config
 from ..core.pdf_export import export_prescription_pdf
 from .dark import is_dark
 from .pagekit import (
-    AnimatedButton, BasePage, SectionCard, SmoothScrollArea, section_label, style_panel,
+    AnimatedButton, AutoGrowTextEdit, BasePage, SectionCard, SmoothScrollArea,
+    section_label, style_panel,
 )
 
 
@@ -54,6 +55,8 @@ class PrescribeWorker(QThread):
 
 
 class PrescribePage(BasePage):
+    # 携带当前药方提示词请求跳转 AI 助手（由主窗口连接处理）
+    ask_ai = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("药方开方", "填写病情信息，AI 自动生成中药方")
@@ -96,17 +99,15 @@ class PrescribePage(BasePage):
         # 症状（多行、必填）
         self.symptoms_label = section_label("主诉 / 症状 *", form, bold=False)
         v.addWidget(self.symptoms_label)
-        self.sy = QPlainTextEdit(form)
+        self.sy = AutoGrowTextEdit(form, max_rows=6)
         self.sy.setPlaceholderText("如：反复上腹隐痛，嗳气，食欲不振")
-        self.sy.setFixedHeight(108)
         self.sy.textChanged.connect(self._on_symptoms_changed)
         v.addWidget(self.sy)
 
         v.addSpacing(2)
         v.addWidget(section_label("现病史", form, bold=False))
-        self.hist = QPlainTextEdit(form)
+        self.hist = AutoGrowTextEdit(form, max_rows=6)
         self.hist.setPlaceholderText("如：半年前曾确诊慢性胃炎")
-        self.hist.setFixedHeight(84)
         v.addWidget(self.hist)
 
         v.addSpacing(4)
@@ -226,6 +227,11 @@ class PrescribePage(BasePage):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._do_export)
         bar.addWidget(self.export_btn)
+        self.ask_ai_btn = AnimatedButton("询问 AI 助手")
+        self.ask_ai_btn.setCursor(Qt.PointingHandCursor)
+        self.ask_ai_btn.setEnabled(False)
+        self.ask_ai_btn.clicked.connect(self._on_ask_ai)
+        bar.addWidget(self.ask_ai_btn)
         self.reset_btn = AnimatedButton("重置")
         self.reset_btn.setObjectName("Ghost")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
@@ -339,6 +345,7 @@ class PrescribePage(BasePage):
 
         self.status.setText("正在开方…")
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fit_content()
 
     def _info_lines(self, data):
@@ -376,6 +383,7 @@ class PrescribePage(BasePage):
         self._clear_placeholder()
         self.status.setText("开方完成 ✅" + ("  ·  模型：" + result.get("model", "") if result.get("model") else ""))
         self.export_btn.setEnabled(True)
+        self.ask_ai_btn.setEnabled(True)
 
         name = result.get("prescription_name", "")
         principle = result.get("principle", "")
@@ -412,6 +420,7 @@ class PrescribePage(BasePage):
         err.add_text(msg, role="body")
         self._append_card(err)
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fit_content()
 
     def _fit_content(self):
@@ -481,9 +490,44 @@ class PrescribePage(BasePage):
         self._last_result = None
         self.status.setText("填写病情信息后点击「开方」")
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fade_to(0)
 
-    # ---- 导出 PDF ----
+    # ---- 导出 PDF 与询问 AI ----
+    def _prescription_prompt(self) -> str:
+        """把患者信息与药方结果合并，组装成注入 AI 提示词的文本。"""
+        data = self._last_data or {}
+        r = self._last_result or {}
+
+        lines = ["【患者信息】"]
+        info = self._info_lines(data)
+        lines.extend(info if info else ["未录入其他信息。"])
+
+        lines.append("")
+        lines.append("【药方内容】")
+        if r.get("prescription_name"):
+            lines.append(f"药方名称：{r['prescription_name']}")
+        if r.get("principle"):
+            lines.append(f"立法思路：{r['principle']}")
+        herbs = r.get("herbs") or []
+        comp = []
+        for i, h in enumerate(herbs, 1):
+            dose = f"{h.get('dose', '')}{h.get('unit', '')}".strip()
+            comp.append((f"{i}. {h.get('name', '')}" + (f" {dose}" if dose else "")).strip())
+        if comp:
+            lines.append(f"药物组成：\n" + "\n".join(comp))
+        if r.get("dosage_count"):
+            lines.append(f"共 {len(herbs)} 味 · 剂数：{r['dosage_count']}")
+        for title, key in (("煎服法", "decoction"), ("禁忌", "contraindications"),
+                           ("加减说明", "modifications"), ("备注", "warnings")):
+            if r.get(key):
+                lines.append(f"{title}：{r[key]}")
+        return "\n".join(lines)
+
+    def _on_ask_ai(self):
+        if self._last_result:
+            self.ask_ai.emit(self._prescription_prompt())
+
     def _do_export(self):
         if not self._last_result:
             return

@@ -566,3 +566,78 @@ def mock_recognize(data: dict[str, Any]) -> dict[str, Any]:
         "warnings": "以上为虚拟模型模拟生成的识别内容，仅供功能演示，不构成医疗建议。",
         "model": MODEL_NAME,
     }
+
+
+# ---------------------------------------------------------------------------
+# AI 助手对话（模拟）：系统提示词 + 规则引擎回复。
+# 接入真实模型时，把 CHAT_SYSTEM_PROMPT 作为 system 消息拼接在对话最前，
+# 将整个消息列表交给模型即可，返回 schema 不变。
+# ---------------------------------------------------------------------------
+CHAT_SYSTEM_PROMPT = (
+    "# 角色\n"
+    "你是一位经验丰富的中医师，是「智能中药开方系统」的 AI 助手，"
+    "精通中医基础理论、中药学、方剂学与辨证论治。\n"
+    "# 职责\n"
+    "1. 解答用户关于中药、方剂、症状调理、养生保健等中医相关问题；\n"
+    "2. 解释开方/识别结果中的疑问，说明药性、配伍、煎服方法与注意事项；\n"
+    "3. 涉及用药的建议须审慎，明确提示需由执业中医师辨证审核。\n"
+    "# 要求\n"
+    "- 回答精炼准确，先给结论再展开；\n"
+    "- 涉及剂量与配伍时给出安全提示；\n"
+    "- 不夸大疗效、不承诺治愈；\n"
+    "- 无法判断或超出中医范围时如实说明。"
+)
+
+
+def _chat_reply(question: str) -> str:
+    """规则引擎回复：按「药材 → 方剂 → 症状辨证 → 问候 → 兜底」依次匹配。"""
+    q = (question or "").strip()
+
+    # 1) 药材问答：命中本地知识库中的药名
+    for name, info in _HERB_INFO.items():
+        if name in q:
+            return (f"关于「{name}」：\n"
+                    f"· 性味：{info['nature']}\n"
+                    f"· 归经：{info['meridian']}\n"
+                    f"· 功效：{info['effects']}\n"
+                    f"· 注意：{info['notes']}\n\n"
+                    "提示：以上为中药学知识介绍，具体用药请由执业中医师辨证后决定。")
+
+    # 2) 方剂问答：命中经典方库中的方名
+    for h in _HERBS:
+        if h[0] in q:
+            herbs = "、".join(f"{n}{d}{u}" for n, d, u in h[5])
+            return (f"「{h[0]}」为经典方剂，主要思路是「{h[1]}」。\n"
+                    f"组成：{herbs}。\n"
+                    f"煎服：{h[6]}\n\n"
+                    "提示：方剂需在辨证准确的前提下使用，建议由中医师审定。")
+
+    # 3) 症状辨证：按主治关键词推荐可能合适的经典方剂
+    hits = [h[0] for h in _HERBS if any(k in q for k in (h[2] or []))]
+    if hits:
+        return (f"根据您描述的症状，可参考以下经典方剂：{'、'.join(hits[:3])}。\n"
+                "各方的适应证与禁忌不同，建议补充体质、舌脉等信息后由中医师辨证选方。")
+
+    # 4) 问候语
+    if any(w in q for w in ("你好", "您好", "在吗", "嗨", "hello", "hi")):
+        return ("你好，我是中药 AI 助手，可以为您解答中药、方剂、症状调理等方面的问题。"
+                "请描述您的情况或直接提问。")
+
+    # 5) 兜底引导
+    return ("这个问题需要中医辨证后回答，我可以从以下方面帮助您：\n"
+            "· 查询药材性味归经与功效（如：桂枝有什么功效？）\n"
+            "· 了解经典方剂（如：逍遥散适合什么证？）\n"
+            "· 根据症状提示调理方向（如：失眠多梦怎么办？）\n\n"
+            "请换个更具体的问题，或前往「药方开方」填写病情信息，由 AI 为您开方。")
+
+
+def mock_chat(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """模拟 AI 助手对话：取最近一条用户消息做规则回复（为真实模型预留对话格式）。"""
+    user_msgs = [m for m in (messages or [])
+                 if isinstance(m, dict) and m.get("role") == "user"
+                 and str(m.get("content") or "").strip()]
+    question = user_msgs[-1].get("content", "") if user_msgs else ""
+    return {
+        "reply": _chat_reply(question),
+        "model": MODEL_NAME,
+    }

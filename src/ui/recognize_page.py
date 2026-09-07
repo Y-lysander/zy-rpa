@@ -29,7 +29,8 @@ from ..core.pdf_export import export_recognize_pdf
 from ..data.herbs import HERB_NAMES, search
 from .dark import is_dark
 from .pagekit import (
-    AnimatedButton, BasePage, SectionCard, SmoothScrollArea, section_label, style_panel,
+    AnimatedButton, AutoGrowTextEdit, BasePage, SectionCard, SmoothScrollArea,
+    section_label, style_panel,
 )
 
 # 剂量单位下拉候选（data 存规范化单位文本）
@@ -369,6 +370,8 @@ class HerbRow(QWidget):
 
 
 class RecognizePage(BasePage):
+    # 携带当前识别结论提示词请求跳转 AI 助手（由主窗口连接处理）
+    ask_ai = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("药方识别", "逐项录入药材或粘贴整方，AI 分析药效与配伍")
@@ -425,10 +428,9 @@ class RecognizePage(BasePage):
 
         v.addSpacing(12)
         v.addWidget(section_label("整方文本（可选）", form))
-        self.full_text = QPlainTextEdit(form)
+        self.full_text = AutoGrowTextEdit(form, max_rows=6)
         self.full_text.setPlaceholderText(
             "也可整方一次粘贴，如：桂枝9g 白芍9g 生姜3片 大枣4枚 炙甘草6g")
-        self.full_text.setFixedHeight(120)
         v.addWidget(self.full_text)
         self.hint = QLabel("逐项录入与整方文本可任选其一，也可同时提供。", form)
         self.hint.setWordWrap(True)
@@ -493,6 +495,11 @@ class RecognizePage(BasePage):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._do_export)
         bar.addWidget(self.export_btn)
+        self.ask_ai_btn = AnimatedButton("询问 AI 助手")
+        self.ask_ai_btn.setCursor(Qt.PointingHandCursor)
+        self.ask_ai_btn.setEnabled(False)
+        self.ask_ai_btn.clicked.connect(self._on_ask_ai)
+        bar.addWidget(self.ask_ai_btn)
         self.reset_btn = AnimatedButton("重置")
         self.reset_btn.setObjectName("Ghost")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
@@ -603,6 +610,7 @@ class RecognizePage(BasePage):
 
         self.status.setText("正在识别…")
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fit_content()
 
     def _append_card(self, card, is_placeholder=False):
@@ -629,6 +637,7 @@ class RecognizePage(BasePage):
         self.status.setText(
             "识别完成 ✅" + ("  ·  模型：" + result.get("model", "") if result.get("model") else ""))
         self.export_btn.setEnabled(True)
+        self.ask_ai_btn.setEnabled(True)
 
         for h in result.get("herbs") or []:
             name = h.get("name", "")
@@ -667,6 +676,7 @@ class RecognizePage(BasePage):
         err.add_text(msg, role="body")
         self._append_card(err)
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fit_content()
 
     def _fit_content(self):
@@ -722,9 +732,37 @@ class RecognizePage(BasePage):
         self._last_result = None
         self.status.setText("录入药材后点击「识别」")
         self.export_btn.setEnabled(False)
+        self.ask_ai_btn.setEnabled(False)
         self._fade_to(0)
 
-    # ---- 导出 PDF ----
+    # ---- 导出 PDF 与询问 AI ----
+    def _prescription_prompt(self) -> str:
+        """把当前识别结论组装成注入 AI 提示词的方子文本。"""
+        r = self._last_result or {}
+        lines = ["【方剂内容】"]
+        herbs = r.get("herbs") or []
+        comp = []
+        for i, h in enumerate(herbs, 1):
+            dose = f"{h.get('dose', '')}{h.get('unit', '')}".strip()
+            name = f"{i}. {h.get('name', '')}" + (f" {dose}" if dose else "")
+            parts = [name]
+            for label, key in (("性味", "nature_flavor"), ("归经", "meridian"),
+                               ("功效", "effects"), ("注意", "notes")):
+                if h.get(key):
+                    parts.append(f"{label}：{h[key]}")
+            comp.append("\n    ".join(p for p in parts))
+        if comp:
+            lines.append("药物组成：\n" + "\n".join(comp))
+        for title, key in (("配伍解析", "interaction"), ("煎服确认", "decoction"),
+                           ("备注", "warnings")):
+            if r.get(key):
+                lines.append(f"{title}：{r[key]}")
+        return "\n".join(lines)
+
+    def _on_ask_ai(self):
+        if self._last_result:
+            self.ask_ai.emit(self._prescription_prompt())
+
     def _do_export(self):
         if not self._last_result:
             return

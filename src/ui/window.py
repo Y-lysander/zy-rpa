@@ -17,7 +17,7 @@ from ..core import theme
 from ..core.config import Config
 from ..core.user_config import UserConfig
 from .dark import is_dark
-from .placeholder_page import PlaceholderPage
+from .assistant_page import AssistantPage
 from .prescribe_page import PrescribePage
 from .recognize_page import RecognizePage
 from .settings_page import SettingsPage
@@ -472,9 +472,11 @@ class AppWindow(QWidget):
 
         self.pages["prescribe"] = PrescribePage()
         self.pages["recognize"] = RecognizePage()
-        self.pages["assistant"] = PlaceholderPage("AI助手", "与 AI 对话，改进与调整药方，实时查看药方状态")
+        self.pages["assistant"] = AssistantPage()
         self.pages["settings"] = SettingsPage(window=self)
         self.pages["about"] = AboutPage()
+        self.pages["prescribe"].ask_ai.connect(self._open_assistant_analysis)
+        self.pages["recognize"].ask_ai.connect(self._open_assistant_analysis)
         for key, page in self.pages.items():
             self.stack.addWidget(page)
         self.stack.setCurrentWidget(self.pages["prescribe"])
@@ -575,6 +577,12 @@ class AppWindow(QWidget):
     def notify_config_changed(self):
         """设置被保存后刷新所有页面。"""
         self._refresh_all()
+
+    def _open_assistant_analysis(self, prescription_prompt: str):
+        """「询问AI助手」：跳转到 AI 助手页，把方子提示词注入并自动分析一次。"""
+        self.switch_page("assistant")
+        QTimer.singleShot(0, lambda: self.pages["assistant"].start_prescription_chat(
+            prescription_prompt))
 
     def _refresh_all(self):
         for p in self.pages.values():

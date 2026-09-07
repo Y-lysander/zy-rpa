@@ -41,6 +41,11 @@ class VirtualAIClient:
     def recognize(self, data: dict, timeout: float = 120.0) -> dict:
         return self._post("/api/recognize", data, timeout)
 
+    # ---- 助手对话 ----
+    def chat(self, messages: list, timeout: float = 120.0) -> dict:
+        """发送完整对话历史（[{role, content}]），返回一条助手回复。"""
+        return self._post("/api/chat", {"messages": messages}, timeout)
+
     def _post(self, path: str, data: dict, timeout: float) -> dict:
         req = urllib.request.Request(
             f"{self.base}{path}",

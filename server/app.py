@@ -4,6 +4,7 @@
     GET  /health            健康探活（GUI 用于检测服务是否已启动）
     POST /api/prescribe     药方开方（单次对话，直接给出药方，不询问）
     POST /api/recognize     药方识别（逐味分析药效，附配伍与煎服建议）
+    POST /api/chat          AI 助手对话（携带完整历史消息，返回一条回复）
 
 启动：
     python -m server.run
@@ -64,6 +65,20 @@ class RecognizeResponse(BaseModel):
     model: str
 
 
+class ChatMessage(BaseModel):
+    role: str = "user"        # user | assistant
+    content: str = ""
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage] = []   # 完整对话历史（不含系统提示词）
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    model: str
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": mock_ai.MODEL_NAME}
@@ -81,3 +96,9 @@ def recognize(req: RecognizeRequest):
     """虚拟识别：逐味分析药效，附配伍解析与煎服建议。"""
     data = req.model_dump()
     return mock_ai.mock_recognize(data)
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    """AI 助手对话：携带完整历史消息，返回一条助手回复。"""
+    return mock_ai.mock_chat([m.model_dump() for m in req.messages])
